@@ -1,0 +1,52 @@
+# Floor versions (>=) throughout rather than exact pins. Exact-pinning
+# packages that other entries in this file also depend on (transitively)
+# is what caused three separate ResolutionImpossible errors in a row here -
+# langchain-core vs langchain-community, mcp vs fastmcp, python-dotenv vs
+# uvicorn[standard]/fastmcp. Floors let pip's resolver pick a mutually
+# compatible set itself instead of guessing exact versions with no resolver
+# to check them against.
+
+# --- Web framework / server ---
+fastapi>=0.115.6
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20   # required by FastAPI's File()/Form() in documents.py
+
+# --- Database / auth ---
+sqlalchemy>=2.0.36
+psycopg2-binary>=2.9.10
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+# passlib (unmaintained since ~2020) reads bcrypt's now-removed __about__
+# attribute and also relies on bcrypt silently truncating >72-byte inputs in
+# its own internal self-test - both behaviors changed in bcrypt>=4.1, which
+# breaks passlib's hash_password() on every startup. This needs an explicit
+# ceiling, unlike everything else in this file.
+bcrypt==4.0.1
+
+# --- Background jobs ---
+celery>=5.4.0
+redis>=5.2.1
+
+# --- Config ---
+python-dotenv>=1.1.0   # fastmcp requires >=1.1.0; uvicorn[standard] only needs >=0.13
+pydantic>=2.10.4       # fastapi and langchain-core both range-pin pydantic
+
+# --- Object storage / vector DB ---
+minio>=7.2.13
+pymilvus>=2.4.9    # langchain-milvus range-pins pymilvus
+
+# --- LangChain stack (services.py / tasks.py / agent_engine.py) ---
+langchain-core>=0.3.29
+langchain-community>=0.3.14
+langchain-openai>=0.2.14
+langchain-milvus>=0.1.7
+langchain-text-splitters>=0.3.4
+
+# --- MCP (agent_engine.py client, mcp_server.py server) ---
+mcp>=1.8.1
+fastmcp>=2.3.4
+
+# --- Document loaders used in tasks.py ---
+pymupdf>=1.25.1        # PyMuPDFLoader
+docx2txt>=0.8          # Docx2txtLoader
+unstructured[md]>=0.16.11  # UnstructuredMarkdownLoader

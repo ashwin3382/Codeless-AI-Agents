@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+# PyCharm Settings Directory
+.idea/
+
+# Testing & Coverage Caches
+.pytest_cache/
+.mypy_cache/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+
+# Virtual Environments
+venv/
+.venv/

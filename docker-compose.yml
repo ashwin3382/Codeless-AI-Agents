@@ -1,0 +1,153 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL Database Layer
+  postgres:
+    image: postgres:15-alpine
+    container_name: agent_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: agent_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. MinIO Object Storage Layer
+  minio:
+    image: minio/minio:RELEASE.2024-01-28T22-35-53Z
+    container_name: agent_minio
+    restart: always
+    ports:
+      - "9000:9000"       # API Port
+      - "9001:9001"       # Web Console UI Port
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  # 3. Redis Matrix
+  redis:
+    image: redis:7-alpine
+    container_name: agent_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # 4. Milvus Standalone (Vector DB)
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    container_name: milvus-standalone
+    command: [ "milvus", "run", "standalone" ]
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: "/var/lib/milvus/etcd"
+      COMMON_STORAGETYPE: "local"
+      MINIO_ADDRESS: "minio:9000"
+      MINIO_ACCESS_KEY_ID: "minioadmin"
+      MINIO_SECRET_ACCESS_KEY: "minioadmin"
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      - minio
+
+  # 5. FastAPI app
+  api:
+    build: .
+    container_name: agent_api
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/agent_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-insecure-secret-do-not-use-in-production}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme123}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-*}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - milvus
+
+  # 6. Celery worker
+  worker:
+    build: .
+    container_name: agent_worker
+    restart: always
+    command: ["celery", "-A", "tasks.celery_app", "worker", "--loglevel=INFO"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/agent_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-insecure-secret-do-not-use-in-production}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - milvus
+
+  # 7. SonarQube
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: agent_sonarqube
+    restart: unless-stopped
+    ports:
+      - "9002:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+
+  sonar-scanner:
+    image: sonarsource/sonar-scanner-cli
+    container_name: agent_sonar_scanner
+    profiles: [ "tools" ]
+    working_dir: /usr/src
+    volumes:
+      - ./:/usr/src
+    environment:
+      SONAR_HOST_URL: http://sonarqube:9000
+      SONAR_TOKEN: ${SONAR_TOKEN}
+    depends_on:
+      - sonarqube
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  milvus_data:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:
