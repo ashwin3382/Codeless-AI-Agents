@@ -57,10 +57,53 @@ services:
       - "9091:9091"
     volumes:
       - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
     depends_on:
       - minio
 
-  # 5. FastAPI app
+  # 5. Dedicated MCP SSE Server Container
+  mcp_service:
+    build: .
+    container_name: agent_mcp_service
+    restart: always
+    command: ["python", "mcp_server.py"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/agent_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-insecure-secret-do-not-use-in-production}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      milvus:
+        condition: service_healthy
+
+  # 6. FastAPI App
   api:
     build: .
     container_name: agent_api
@@ -85,12 +128,9 @@ services:
       AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
     depends_on:
-      - postgres
-      - redis
-      - minio
-      - milvus
-
-  # 6. Celery worker
+      mcp_service:
+        condition: service_healthy
+  # 7. Celery Worker
   worker:
     build: .
     container_name: agent_worker
@@ -111,12 +151,49 @@ services:
       AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME}
       AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
     depends_on:
-      - postgres
-      - redis
-      - minio
-      - milvus
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      milvus:
+        condition: service_healthy
 
-  # 7. SonarQube
+  # 7b. Celery Beat - schedules tasks.expire_stale_sessions (see tasks.py).
+  # Separate from the worker container: beat's job is only to enqueue the
+  # task on schedule, not execute it, and running two beat processes at
+  # once double-schedules everything, so this must stay a single replica.
+  beat:
+    build: .
+    container_name: agent_beat
+    restart: always
+    command: ["celery", "-A", "tasks.celery_app", "beat", "--loglevel=INFO"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/agent_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-insecure-secret-do-not-use-in-production}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${AZURE_OPENAI_DEPLOYMENT_NAME}
+      AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME}
+      AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      milvus:
+        condition: service_healthy
+
+  # 8. SonarQube
   sonarqube:
     image: sonarqube:lts-community
     container_name: agent_sonarqube

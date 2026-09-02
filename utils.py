@@ -17,9 +17,9 @@ def check_task_status(task_id: str) -> str:
         return f"Task failed. Traceback/Error: {str(res.info)}"
     return f"Current status: {res.state}"
 
-def query_rag_document(question: str) -> str:
+def query_rag_document(question: str, session_id: str = None) -> str:
     from services import retrieve_relevant_docs
     try:
-        return retrieve_relevant_docs(question)
+        return retrieve_relevant_docs(question, session_id)
     except Exception as e:
         return f"Error executing RAG search: {str(e)}"

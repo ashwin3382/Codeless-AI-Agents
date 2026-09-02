@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -72,7 +73,15 @@ async def list_tools_per_server(server_id: str, db: Session = Depends(get_db),
     if not srv:
         raise HTTPException(status_code=404, detail="Server matrix entry missing.")
 
-    server_params = StdioServerParameters(command=srv.command, args=srv.args, env=srv.env)
+    # StdioServerParameters.env REPLACES the subprocess's environment rather
+    # than extending it - passing srv.env alone means the spawned server only
+    # sees whatever was explicitly stored on the MCPServerModel row, not the
+    # .env-derived vars (DATABASE_URL, AZURE_OPENAI_*, etc.) this process
+    # already has. Merge our own environment in first so the subprocess
+    # inherits everything by default, then let the row's env act as
+    # per-server overrides/additions on top of that.
+    merged_env = {**os.environ, **(srv.env or {})}
+    server_params = StdioServerParameters(command=srv.command, args=srv.args, env=merged_env)
     try:
         async with stdio_client(server_params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:

@@ -1,8 +1,4 @@
 import warnings
-
-# Keep noisy deprecation/user warnings out of the process entirely - useful
-# hygiene even on stdio transport, since anything unexpected on stdout could
-# corrupt the MCP protocol stream.
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -10,35 +6,61 @@ import os
 os.environ["PYTHONWARNINGS"] = "ignore"
 
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 from utils import check_task_status, query_rag_document
-from tasks import process_minio_document_bg
+from fastmcp.server.dependencies import get_http_request
+from services import trigger_ingestion_task
+
+
+DEFAULT_BUCKET = os.getenv("MINIO_DEFAULT_BUCKET", "agent-documents")
 
 mcp = FastMCP("RAG Background Manager")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> PlainTextResponse:
+    """Plain, non-streaming endpoint for Docker/orchestrator healthchecks.
+    """
+    return PlainTextResponse("OK")
+
+
+def _get_session_context():
+    """session_id / username come from the SSE request's query string
+    (set server-side by agent_engine.py from the real, verified session) -
+    never from a tool argument, so an LLM (or a prompt-injected document)
+    can't pick or override where its files land."""
+    request = get_http_request()
+    if not request:
+        return None, None
+    return request.query_params.get("session_id"), request.query_params.get("username")
+
 
 
 @mcp.tool()
 def query_knowledge_base(question: str) -> str:
     """Queries the Milvus Vector DB using the strict document-bound LangChain RAG pipeline."""
-    return query_rag_document(question)
+    session_id, _ = _get_session_context()
+    return query_rag_document(question, session_id)
 
 
 @mcp.tool()
-def ingest_minio_document(bucket_name: str, object_name: str) -> str:
-    """Triggers a background Celery task to download, split, embed, and ingest an object from MinIO."""
-    task = process_minio_document_bg.delay(bucket_name, object_name)
-    return f"Ingestion task started successfully! Task ID: {task.id}."
+def ingest_minio_document(object_name: str) -> str:
 
+    session_id, username = _get_session_context()
+    if not session_id:
+        return "Error: no active session context - ingestion must run inside an agent session."
+    safe_object_name = os.path.basename(object_name or "")
+    if not safe_object_name:
+        return "Error: object_name is required and must not be empty."
 
+    result = trigger_ingestion_task(DEFAULT_BUCKET, safe_object_name, session_id, username)
+    return f"{result['detail']} Stored as: {result['storage_key']}"
 @mcp.tool()
 def check_ingestion_status(task_id: str) -> str:
     """Checks the live execution state of an ongoing MinIO document ingestion task."""
     return check_task_status(task_id)
 
-
 if __name__ == "__main__":
-    # Runs over stdio so it can be spawned as a subprocess via
-    # StdioServerParameters (see agent_engine.py / main.py), matching how
-    # MCPServerModel rows are configured (command="python", args=["mcp_server.py"]).
-    # Previously this set sys.argv for a stdio run but then called
-    # mcp.run(transport="http", ...) anyway, so the two never matched.
-    mcp.run(transport="stdio")
+
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)

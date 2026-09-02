@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from services import engine, Base, seed_default_admin
+from services import engine, Base, seed_default_admin, seed_default_mcp_server
 from routers import auth, mcp_servers, agents, chat, documents, sessions, notifications
 
 # Bind and construct relational database structures
@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
     # to admin/changeme123) if the users table is empty, so the API is
     # immediately usable for local testing with zero manual setup.
     seed_default_admin()
+    seed_default_mcp_server()
     yield
     # Shutdown: nothing to clean up yet - add it here if that changes.
 

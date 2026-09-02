@@ -10,6 +10,18 @@ from services import hash_password, verify_password
 router = APIRouter(tags=["auth"])
 
 
+@router.post("/signup", status_code=status.HTTP_201_CREATED)
+def signup(payload: UserCreateSchema, db: Session = Depends(get_db)):
+    """Public, unauthenticated self-service signup. Distinct from
+    POST /users below, which stays as-is (requires a valid JWT) for an
+    already-logged-in user/admin provisioning another account."""
+    if db.query(UserModel).filter(UserModel.username == payload.username).first():
+        raise HTTPException(status_code=400, detail="Username already exists.")
+    db.add(UserModel(username=payload.username, hashed_password=hash_password(payload.password)))
+    db.commit()
+    return {"status": "created", "username": payload.username}
+
+
 @router.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(UserModel).filter(UserModel.username == form_data.username).first()

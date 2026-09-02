@@ -1,11 +1,16 @@
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from contextlib import AsyncExitStack
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+
+# Swapped stdio imports for SSE client imports
+from mcp import ClientSession
+from mcp.client.sse import sse_client
+
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from services import llm, get_redis_history, add_to_memory, retrieve_from_memory
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from models import MCPServerModel, AgentSessionModel, AgentChatModel
 from schemas import TelemetryReport, ToolExecutionTrace
 
@@ -29,6 +34,12 @@ async def run_agent_workflow(agent_cfg, payload, db, current_user, redis_client=
         )
         db.add(session_row)
         db.commit()
+    elif session_row.username != current_user:
+        # A session_id is per-user private storage (its Redis short-term
+        # history and Milvus long-term memory belong to whoever created it).
+        # Without this check, any authenticated user who learns/guesses
+        # another user's session_id could resume it and read their history.
+        raise PermissionError(f"Session '{payload.session_id}' does not belong to user '{current_user}'.")
 
     system_instruction = f"System Prompt:\n{agent_cfg.agent_prompt}\n\nGuardrails:\n{agent_cfg.guardrails or ''}"
     history_manager = get_redis_history(payload.session_id)
@@ -66,8 +77,16 @@ async def run_agent_workflow(agent_cfg, payload, db, current_user, redis_client=
         for srv_id in needed_servers:
             if srv_id in server_map:
                 cfg = server_map[srv_id]
-                params = StdioServerParameters(command=cfg.command, args=cfg.args, env=cfg.env)
-                read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
+                # cfg.command now holds the HTTP SSE URL (e.g. "http://mcp_service:8000/sse")
+                sse_url = cfg.command
+
+                parsed = urlparse(sse_url)
+                query = dict(parse_qsl(parsed.query))
+                query["session_id"] = payload.session_id
+                query["username"] = current_user
+                sse_url = urlunparse(parsed._replace(query=urlencode(query)))
+
+                read_stream, write_stream = await stack.enter_async_context(sse_client(sse_url))
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
                 mcp_sessions[srv_id] = session
@@ -148,7 +167,7 @@ async def run_agent_workflow(agent_cfg, payload, db, current_user, redis_client=
 
     telemetry.total_token_usage = telemetry.total_prompt_tokens + telemetry.total_completion_tokens
     telemetry.total_estimated_cost_usd = (telemetry.total_prompt_tokens * PRICE_INPUT_PER_TOKEN) + (
-                telemetry.total_completion_tokens * PRICE_OUTPUT_PER_TOKEN)
+            telemetry.total_completion_tokens * PRICE_OUTPUT_PER_TOKEN)
 
     history_manager.add_user_message(payload.message)
     history_manager.add_ai_message(ai_response_content)
